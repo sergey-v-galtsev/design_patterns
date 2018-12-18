@@ -19,6 +19,7 @@ Design Patterns
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 
 using namespace std;
@@ -50,10 +51,14 @@ public:
     }
 
     void withdraw(int amount, Currency currency) {
+        if (amount <= 0) {
+            throw logic_error{"cat not withdraw non-positive amount"};
+        }
+
         const auto extraction = currency == currency_ and value_ != 0 ? min(amount / value_, count_) : 0;
         const auto result = amount - extraction * value_;
 
-        if (next()) {
+        if (next() and result > 0) {
             next()->withdraw(result, currency);
         } else {
             if (result != 0) {
@@ -62,7 +67,7 @@ public:
         }
 
         if (extraction > 0) {
-            cout << "Dispensing " << extraction << " * " << value_ << " = " << extraction * value_ << ' ' << getCurrencyName(currency_) << '\n';
+            cout << "dispensing " << extraction << " * " << value_ << " = " << extraction * value_ << ' ' << getCurrencyName(currency_) << '\n';
         }
 
         count_ -= extraction;
@@ -97,6 +102,10 @@ public:
         setNext(move(next));
     }
 
+    unique_ptr<Dispenser> clone() const {
+        return make_unique<Dispenser>(count_, value_, currency_);
+    }
+
 private:
     unique_ptr<Dispenser> next_ = nullptr;
     int count_;
@@ -115,9 +124,9 @@ public:
     void withdraw(int amount, Currency currency = Currency::rub) {
         try {
             dispensers->withdraw(amount, currency);
-            cout << "Withdrawen " << amount << ' ' << getCurrencyName(currency) << '\n';
-        } catch (logic_error&) {
-            cout << "Can not withdraw " << amount << ' ' << getCurrencyName(currency) << '\n';
+            cout << "withdrawen " << amount << ' ' << getCurrencyName(currency) << '\n';
+        } catch (logic_error& error) {
+            cout << "error withdrawing " << amount << ' ' << getCurrencyName(currency) << ": " << error.what() << '\n';
             throw;
         }
     }
@@ -130,9 +139,7 @@ public:
         return amount;
     }
 
-    template <typename... Args>
-    void addDispenser(Args... args) {
-        auto dispenser = make_unique<Dispenser>(forward<Args>(args)...);
+    Atm& addDispenser(unique_ptr<Dispenser> dispenser) {
         Dispenser* prev = nullptr;
         auto it = dispensers->first();
         while (not it->shouldFollow(dispenser.get())) {
@@ -146,10 +153,69 @@ public:
             dispenser->setNext(move(dispensers));
             dispensers = move(dispenser);
         }
+
+        return *this;
+    }
+
+    template <typename... Args>
+    Atm& addDispenser(Args... args) {
+        return addDispenser(make_unique<Dispenser>(forward<Args>(args)...));
+    }
+
+    unique_ptr<Atm> clone() const {
+        auto atm = make_unique<Atm>();
+        for (auto it = dispensers->first(); not it->isDone(); it = it->next()) {
+            atm->addDispenser(it->clone());
+        }
+        return atm;
     }
 
 private:
     unique_ptr<Dispenser> dispensers;
+};
+
+
+using AtmRegistry = unordered_map<string, Atm>;
+
+
+class Bank {
+public:
+    Bank() {
+        registry["EUR"]
+            .addDispenser(100, 500, Currency::eur)
+            .addDispenser(100, 100, Currency::eur)
+            .addDispenser(100, 50, Currency::eur)
+            .addDispenser(100, 20, Currency::eur)
+            .addDispenser(100, 10, Currency::eur)
+            .addDispenser(100, 5, Currency::eur);
+        registry["RUB"]
+            .addDispenser(100, 5000, Currency::rub)
+            .addDispenser(100, 1000, Currency::rub)
+            .addDispenser(100, 500, Currency::rub)
+            .addDispenser(100, 100, Currency::rub);
+        registry["USD"]
+            .addDispenser(100, 100, Currency::usd)
+            .addDispenser(100, 50, Currency::usd)
+            .addDispenser(100, 20, Currency::usd);
+        registry["all"]
+            .addDispenser(100, 5000, Currency::rub)
+            .addDispenser(100, 500, Currency::rub)
+            .addDispenser(100, 100, Currency::eur)
+            .addDispenser(100, 100, Currency::usd);
+    }
+
+    Atm* addAtm(const string& name) {
+        if (registry.count(name)) {
+            atms.push_back(registry[name].clone());
+            return atms.back().get();
+        } else {
+            return nullptr;
+        }
+    }
+
+private:
+    AtmRegistry registry;
+    vector<unique_ptr<Atm>> atms;
 };
 
 
@@ -182,6 +248,8 @@ void testDispenser() {
     assert(rub100->next()->isDone());
     assert(rub100->balance(Currency::rub) == 1000);
 
+    testTransactionRollback(*rub100, 0, Currency::rub);
+    testTransactionRollback(*rub100, -100, Currency::rub);
     testTransactionRollback(*rub100, 123, Currency::rub);
 
     rub100->withdraw(100, Currency::rub);
@@ -201,6 +269,8 @@ void testAtmSingleDispenser() {
 
     assert(atm.balance(Currency::rub) == 1000);
 
+    testTransactionRollback(atm, 0, Currency::rub);
+    testTransactionRollback(atm, -100, Currency::rub);
     testTransactionRollback(atm, 123, Currency::rub);
 
     atm.withdraw(100, Currency::rub);
@@ -224,6 +294,8 @@ void testAtmMultiDispenser() {
     assert(atm.balance(Currency::eur) == 0);
     assert(atm.balance(Currency::usd) == 0);
 
+    testTransactionRollback(atm, 0, Currency::rub);
+    testTransactionRollback(atm, -100, Currency::rub);
     testTransactionRollback(atm, 123, Currency::rub);
 
     atm.withdraw(100, Currency::rub);
@@ -290,9 +362,44 @@ void testAtm() {
 }
 
 
+void testBank() {
+    Bank bank;
+
+    auto eur1 = bank.addAtm("EUR");
+    auto eur2 = bank.addAtm("EUR");
+    auto rub = bank.addAtm("RUB");
+    auto usd = bank.addAtm("USD");
+    auto all = bank.addAtm("all");
+
+    assert(eur1->balance(Currency::eur) == eur2->balance(Currency::eur));
+
+    eur1->withdraw(12345, Currency::eur);
+    assert(eur1->balance(Currency::eur) == eur2->balance(Currency::eur) - 12345);
+
+    eur2->withdraw(12345, Currency::eur);
+    assert(eur1->balance(Currency::eur) == eur2->balance(Currency::eur));
+
+    assert(eur1->balance(Currency::rub) == 0);
+    assert(eur1->balance(Currency::usd) == 0);
+
+    assert(rub->balance(Currency::eur) == 0);
+    assert(rub->balance(Currency::rub) > 0);
+    assert(rub->balance(Currency::usd) == 0);
+
+    assert(all->balance(Currency::eur) > 0);
+    assert(all->balance(Currency::rub) > 0);
+    assert(all->balance(Currency::usd) > 0);
+
+    usd->withdraw(usd->balance(Currency::usd), Currency::usd);
+    assert(usd->balance(Currency::usd) == 0);
+    assert(bank.addAtm("USD")->balance(Currency::usd) > 0);
+}
+
+
 int main() {
     testDispenser();
     testAtm();
+    testBank();
     cout << "All tests passed.\n";
     return 0;
 }
