@@ -12,10 +12,12 @@ Design Patterns
 
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 
@@ -23,10 +25,19 @@ using namespace std;
 
 
 enum class Currency {
+    eur = 0,
     rub,
     usd,
-    eur,
+    currencySize
 };
+
+
+const string& getCurrencyName(Currency currency) {
+    static const array<string, static_cast<size_t>(Currency::currencySize)> names = {"EUR", "RUB", "USD"};
+    const size_t index = static_cast<size_t>(currency);
+    assert(index < names.size());
+    return names[index];
+}
 
 
 class Dispenser {
@@ -48,6 +59,10 @@ public:
             if (result != 0) {
                 throw logic_error{"cat not withdraw the given amount"};
             }
+        }
+
+        if (extraction > 0) {
+            cout << "Dispensing " << extraction << " * " << value_ << " = " << extraction * value_ << ' ' << getCurrencyName(currency_) << '\n';
         }
 
         count_ -= extraction;
@@ -98,7 +113,13 @@ public:
     }
 
     void withdraw(int amount, Currency currency = Currency::rub) {
-        dispensers->withdraw(amount, currency);
+        try {
+            dispensers->withdraw(amount, currency);
+            cout << "Withdrawen " << amount << ' ' << getCurrencyName(currency) << '\n';
+        } catch (logic_error&) {
+            cout << "Can not withdraw " << amount << ' ' << getCurrencyName(currency) << '\n';
+            throw;
+        }
     }
 
     int balance(Currency currency = Currency::rub) {
@@ -132,14 +153,16 @@ private:
 };
 
 
-#define SHOULD_THROW(code, exception) \
-    do { \
-        try { \
-            code; \
-            assert(false); \
-        } catch (exception&) { \
-        } \
-    } while (false);
+template <typename Withdrawable>
+void testTransactionRollback(Withdrawable& withdrawable, int amount, Currency currency) {
+    const auto balance = withdrawable.balance(currency);
+    try {
+        withdrawable.withdraw(amount, currency);
+        assert(false);
+    } catch (logic_error&) {
+    }
+    assert(withdrawable.balance(currency) == balance);
+}
 
 
 void testDispenser() {
@@ -159,16 +182,14 @@ void testDispenser() {
     assert(rub100->next()->isDone());
     assert(rub100->balance(Currency::rub) == 1000);
 
-    SHOULD_THROW(rub100->withdraw(123, Currency::rub), logic_error);
-    assert(rub100->balance(Currency::rub) == 1000);
+    testTransactionRollback(*rub100, 123, Currency::rub);
 
     rub100->withdraw(100, Currency::rub);
     assert(rub100->balance(Currency::rub) == 900);
     rub100->withdraw(300, Currency::rub);
     assert(rub100->balance(Currency::rub) == 600);
 
-    SHOULD_THROW(rub100->withdraw(100, Currency::usd), logic_error);
-    assert(rub100->balance(Currency::rub) == 600);
+    testTransactionRollback(*rub100, 100, Currency::usd);
 
     assert(rub100->balance(Currency::eur) == 0);
 }
@@ -180,16 +201,14 @@ void testAtmSingleDispenser() {
 
     assert(atm.balance(Currency::rub) == 1000);
 
-    SHOULD_THROW(atm.withdraw(123, Currency::rub), logic_error);
-    assert(atm.balance(Currency::rub) == 1000);
+    testTransactionRollback(atm, 123, Currency::rub);
 
     atm.withdraw(100, Currency::rub);
     assert(atm.balance(Currency::rub) == 900);
     atm.withdraw(300, Currency::rub);
     assert(atm.balance(Currency::rub) == 600);
 
-    SHOULD_THROW(atm.withdraw(100, Currency::usd), logic_error);
-    assert(atm.balance(Currency::rub) == 600);
+    testTransactionRollback(atm, 100, Currency::usd);
 }
 
 
@@ -205,8 +224,7 @@ void testAtmMultiDispenser() {
     assert(atm.balance(Currency::eur) == 0);
     assert(atm.balance(Currency::usd) == 0);
 
-    SHOULD_THROW(atm.withdraw(123, Currency::rub), logic_error)
-    assert(atm.balance(Currency::rub) == initialBalance);
+    testTransactionRollback(atm, 123, Currency::rub);
 
     atm.withdraw(100, Currency::rub);
     assert(atm.balance(Currency::rub) == initialBalance - 100);
@@ -217,13 +235,12 @@ void testAtmMultiDispenser() {
     atm.withdraw(100, Currency::rub);
     assert(atm.balance(Currency::rub) == initialBalance - 500);
 
-    SHOULD_THROW(atm.withdraw(100, Currency::rub), logic_error);
-    assert(atm.balance(Currency::rub) == initialBalance - 500);
+    testTransactionRollback(atm, 100, Currency::rub);
 
     atm.withdraw(400, Currency::rub);
     assert(atm.balance(Currency::rub) == initialBalance - 900);
 
-    SHOULD_THROW(atm.withdraw(200, Currency::rub), logic_error);
+    testTransactionRollback(atm, 200, Currency::rub);
     assert(atm.balance(Currency::rub) == initialBalance - 900);
 
     atm.withdraw(1000, Currency::rub);
@@ -249,12 +266,12 @@ void testAtmMultiCurrency() {
     assert(atm.balance(Currency::rub) == initialBalanceRub);
     assert(atm.balance(Currency::usd) == initialBalanceUsd);
 
-    SHOULD_THROW(atm.withdraw(80, Currency::rub), logic_error);
-    SHOULD_THROW(atm.withdraw(80, Currency::usd), logic_error);
-    SHOULD_THROW(atm.withdraw(700, Currency::eur), logic_error);
-    SHOULD_THROW(atm.withdraw(700, Currency::usd), logic_error);
-    SHOULD_THROW(atm.withdraw(7, Currency::eur), logic_error);
-    SHOULD_THROW(atm.withdraw(7, Currency::rub), logic_error);
+    testTransactionRollback(atm, 80, Currency::rub);
+    testTransactionRollback(atm, 80, Currency::usd);
+    testTransactionRollback(atm, 700, Currency::eur);
+    testTransactionRollback(atm, 700, Currency::usd);
+    testTransactionRollback(atm, 7, Currency::eur);
+    testTransactionRollback(atm, 7, Currency::rub);
 
     atm.withdraw(80, Currency::eur);
     atm.withdraw(700, Currency::rub);
