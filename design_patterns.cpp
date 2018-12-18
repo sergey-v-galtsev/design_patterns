@@ -41,6 +41,15 @@ const string& getCurrencyName(Currency currency) {
 }
 
 
+class Dispenser;
+
+
+class DispenserObserver {
+public:
+    virtual void update(Dispenser* dispenser) = 0;
+};
+
+
 class Dispenser {
 public:
     Dispenser(int count = 0, int value = 0, Currency currency = Currency::rub)
@@ -50,7 +59,7 @@ public:
     {
     }
 
-    void withdraw(int amount, Currency currency) {
+    void withdraw(int amount, Currency currency, DispenserObserver* observer = nullptr) {
         if (amount <= 0) {
             throw logic_error{"cat not withdraw non-positive amount"};
         }
@@ -59,7 +68,7 @@ public:
         const auto result = amount - extraction * value_;
 
         if (next() and result > 0) {
-            next()->withdraw(result, currency);
+            next()->withdraw(result, currency, observer);
         } else {
             if (result != 0) {
                 throw logic_error{"cat not withdraw the given amount"};
@@ -71,10 +80,18 @@ public:
         }
 
         count_ -= extraction;
+
+        if (count_ == 0 and observer) {
+            observer->update(this);
+        }
     }
 
     int balance(Currency currency = Currency::rub) const {
         return currency == currency_ ? count_ * value_ : 0;
+    }
+
+    void restock(int count) {
+        count_ += count;
     }
 
     Dispenser* first() {
@@ -116,14 +133,15 @@ private:
 
 class Atm {
 public:
-    Atm()
-        : dispensers(make_unique<Dispenser>())
+    Atm(DispenserObserver* observer = nullptr)
+        : dispensers_{make_unique<Dispenser>()}
+        , observer_{observer}
     {
     }
 
     void withdraw(int amount, Currency currency = Currency::rub) {
         try {
-            dispensers->withdraw(amount, currency);
+            dispensers_->withdraw(amount, currency, observer_);
             cout << "withdrawen " << amount << ' ' << getCurrencyName(currency) << '\n';
         } catch (logic_error& error) {
             cout << "error withdrawing " << amount << ' ' << getCurrencyName(currency) << ": " << error.what() << '\n';
@@ -133,15 +151,20 @@ public:
 
     int balance(Currency currency = Currency::rub) {
         int amount = 0;
-        for (auto it = dispensers->first(); not it->isDone(); it = it->next()) {
+        for (auto it = dispensers_->first(); not it->isDone(); it = it->next()) {
             amount += it->balance(currency);
         }
         return amount;
     }
 
+    Atm& addObserver(DispenserObserver* observer) {
+        observer_ = observer;
+        return *this;
+    }
+
     Atm& addDispenser(unique_ptr<Dispenser> dispenser) {
         Dispenser* prev = nullptr;
-        auto it = dispensers->first();
+        auto it = dispensers_->first();
         while (not it->shouldFollow(dispenser.get())) {
             prev = it;
             it = it->next();
@@ -150,8 +173,8 @@ public:
         if (prev) {
             prev->insert(move(dispenser));
         } else {
-            dispenser->setNext(move(dispensers));
-            dispensers = move(dispenser);
+            dispenser->setNext(move(dispensers_));
+            dispensers_ = move(dispenser);
         }
 
         return *this;
@@ -163,25 +186,27 @@ public:
     }
 
     unique_ptr<Atm> clone() const {
-        auto atm = make_unique<Atm>();
-        for (auto it = dispensers->first(); not it->isDone(); it = it->next()) {
+        auto atm = make_unique<Atm>(observer_);
+        for (auto it = dispensers_->first(); not it->isDone(); it = it->next()) {
             atm->addDispenser(it->clone());
         }
         return atm;
     }
 
 private:
-    unique_ptr<Dispenser> dispensers;
+    unique_ptr<Dispenser> dispensers_;
+    DispenserObserver* observer_;
 };
 
 
 using AtmRegistry = unordered_map<string, Atm>;
 
 
-class Bank {
+class Bank : public DispenserObserver {
 public:
     Bank() {
         registry["EUR"]
+            .addObserver(this)
             .addDispenser(100, 500, Currency::eur)
             .addDispenser(100, 100, Currency::eur)
             .addDispenser(100, 50, Currency::eur)
@@ -189,15 +214,18 @@ public:
             .addDispenser(100, 10, Currency::eur)
             .addDispenser(100, 5, Currency::eur);
         registry["RUB"]
+            .addObserver(this)
             .addDispenser(100, 5000, Currency::rub)
             .addDispenser(100, 1000, Currency::rub)
             .addDispenser(100, 500, Currency::rub)
             .addDispenser(100, 100, Currency::rub);
         registry["USD"]
+            .addObserver(this)
             .addDispenser(100, 100, Currency::usd)
             .addDispenser(100, 50, Currency::usd)
             .addDispenser(100, 20, Currency::usd);
         registry["all"]
+            .addObserver(this)
             .addDispenser(100, 5000, Currency::rub)
             .addDispenser(100, 500, Currency::rub)
             .addDispenser(100, 100, Currency::eur)
@@ -210,6 +238,12 @@ public:
             return atms.back().get();
         } else {
             return nullptr;
+        }
+    }
+
+    void update(Dispenser* dispenser) override {
+        if (dispenser->balance() == 0) {
+            dispenser->restock(100);
         }
     }
 
@@ -264,7 +298,7 @@ void testDispenser() {
 
 
 void testAtmSingleDispenser() {
-    Atm atm;
+    Atm atm{nullptr};
     atm.addDispenser(10, 100, Currency::rub);
 
     assert(atm.balance(Currency::rub) == 1000);
@@ -283,7 +317,7 @@ void testAtmSingleDispenser() {
 
 
 void testAtmMultiDispenser() {
-    Atm atm;
+    Atm atm{nullptr};
     atm.addDispenser(3, 100, Currency::rub);
     atm.addDispenser(3, 500, Currency::rub);
     atm.addDispenser(3, 200, Currency::rub);
@@ -320,8 +354,29 @@ void testAtmMultiDispenser() {
 }
 
 
+class MockDispenserObserver : public DispenserObserver {
+public:
+    MockDispenserObserver(function<void(Dispenser* dispenser)> update)
+        : update_{update}
+    {
+    }
+
+    void update(Dispenser* dispenser) override {
+        update_(dispenser);
+    }
+
+private:
+    function<void(Dispenser* dispenser)> update_;
+};
+
+
 void testAtmMultiCurrency() {
-    Atm atm;
+    int updates = 0;
+    MockDispenserObserver observer([&updates](Dispenser* dispenser) {
+        ++updates;
+    });
+
+    Atm atm{&observer};
     atm.addDispenser(3, 100, Currency::rub);
     atm.addDispenser(3, 50, Currency::eur);
     atm.addDispenser(3, 7, Currency::usd);
@@ -342,16 +397,18 @@ void testAtmMultiCurrency() {
     testTransactionRollback(atm, 80, Currency::usd);
     testTransactionRollback(atm, 700, Currency::eur);
     testTransactionRollback(atm, 700, Currency::usd);
-    testTransactionRollback(atm, 7, Currency::eur);
-    testTransactionRollback(atm, 7, Currency::rub);
+    testTransactionRollback(atm, initialBalanceUsd, Currency::eur);
+    testTransactionRollback(atm, initialBalanceUsd, Currency::rub);
 
     atm.withdraw(80, Currency::eur);
     atm.withdraw(700, Currency::rub);
-    atm.withdraw(7, Currency::usd);
-
     assert(atm.balance(Currency::eur) == initialBalanceEur - 80);
     assert(atm.balance(Currency::rub) == initialBalanceRub - 700);
-    assert(atm.balance(Currency::usd) == initialBalanceUsd - 7);
+
+    assert(updates == 0);
+    atm.withdraw(initialBalanceUsd, Currency::usd);
+    assert(updates == 1);
+    assert(atm.balance(Currency::usd) == 0);
 }
 
 
@@ -390,9 +447,12 @@ void testBank() {
     assert(all->balance(Currency::rub) > 0);
     assert(all->balance(Currency::usd) > 0);
 
+    const auto initialUsdBalance = usd->balance(Currency::usd);
+    usd->withdraw(100, Currency::usd);
+    assert(usd->balance(Currency::usd) < initialUsdBalance);
     usd->withdraw(usd->balance(Currency::usd), Currency::usd);
-    assert(usd->balance(Currency::usd) == 0);
-    assert(bank.addAtm("USD")->balance(Currency::usd) > 0);
+    assert(usd->balance(Currency::usd) == initialUsdBalance);
+    assert(bank.addAtm("USD")->balance(Currency::usd) == initialUsdBalance);
 }
 
 
