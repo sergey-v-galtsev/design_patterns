@@ -9,4 +9,6 @@
 5. Банк может устанавливать новые банкоматы на основе какой-то типовой конфигурации. Для этого используйте паттерн Prototype.
 6. Используйте паттерн Observer для получения банком оповещений о том что в кассете банкомата закончились банкноты.
 
+## Travis CI
+
 [![Build Status](https://travis-ci.org/sergey-v-galtsev/design_patterns.svg?branch=master)](https://travis-ci.org/sergey-v-galtsev/design_patterns)
