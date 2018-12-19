@@ -89,16 +89,8 @@ public:
         count_ += count;
     }
 
-    Dispenser* first() {
-        return this;
-    }
-
     Dispenser* next() const {
         return next_.get();
-    }
-
-    bool isDone() const {
-        return next() == nullptr;
     }
 
     void setNext(unique_ptr<Dispenser> next) {
@@ -106,7 +98,7 @@ public:
     }
 
     bool shouldFollow(Dispenser* that) const {
-        return isDone() or (currency_ == that->currency_ and value_ < that->value_);
+        return currency_ == that->currency_ and value_ < that->value_;
     }
 
     void insert(unique_ptr<Dispenser> next) {
@@ -126,41 +118,42 @@ private:
 };
 
 
-class Atm : public Clonable<Atm> {
+class DispenserIterator {
 public:
-    Atm(DispenserObserver* observer = nullptr)
-        : dispensers_{make_unique<Dispenser>()}
-        , observer_{observer}
+    DispenserIterator(Dispenser* first, Dispenser* current)
+        : first_{first}
+        , current_{current}
     {
     }
 
-    void withdraw(int amount, Currency currency = Currency::rub) {
-        try {
-            dispensers_->withdraw(amount, currency, observer_);
-            cout << "withdrawn " << amount << ' ' << getCurrencyName(currency) << '\n';
-        } catch (logic_error& error) {
-            cout << "error withdrawing " << amount << ' ' << getCurrencyName(currency) << ": " << error.what() << '\n';
-            throw;
-        }
+    DispenserIterator first() {
+        return DispenserIterator{first_, first_};
     }
 
-    int balance(Currency currency = Currency::rub) {
-        int amount = 0;
-        for (auto it = dispensers_->first(); not it->isDone(); it = it->next()) {
-            amount += it->balance(currency);
-        }
-        return amount;
+    DispenserIterator next() const {
+        return DispenserIterator{first_, current_->next()};
     }
 
-    Atm& addObserver(DispenserObserver* observer) {
-        observer_ = observer;
-        return *this;
+    bool isDone() const {
+        return current_ == nullptr;
     }
 
-    Atm& addDispenser(unique_ptr<Dispenser> dispenser) {
+    Dispenser* operator->() const {
+        return current_;
+    }
+
+private:
+    Dispenser *first_;
+    Dispenser *current_;
+};
+
+
+class DispenserCollection {
+public:
+    void insert(unique_ptr<Dispenser> dispenser) {
         Dispenser* prev = nullptr;
-        auto it = dispensers_->first();
-        while (not it->shouldFollow(dispenser.get())) {
+        auto it = dispensers_.get();
+        while (it and not it->shouldFollow(dispenser.get())) {
             prev = it;
             it = it->next();
         }
@@ -171,25 +164,63 @@ public:
             dispenser->setNext(move(dispensers_));
             dispensers_ = move(dispenser);
         }
+    }
 
+    DispenserIterator getIterator() const {
+        return DispenserIterator{dispensers_.get(), dispensers_.get()};
+    }
+
+private:
+    unique_ptr<Dispenser> dispensers_ = nullptr;
+};
+
+
+class Atm : public Clonable<Atm> {
+public:
+    Atm(DispenserObserver* observer = nullptr)
+        : observer_{observer}
+    {
+    }
+
+    void withdraw(int amount, Currency currency = Currency::rub) {
+        try {
+            dispensers_.getIterator().first()->withdraw(amount, currency, observer_);
+            cout << "withdrawn " << amount << ' ' << getCurrencyName(currency) << '\n';
+        } catch (logic_error& error) {
+            cout << "error withdrawing " << amount << ' ' << getCurrencyName(currency) << ": " << error.what() << '\n';
+            throw;
+        }
+    }
+
+    int balance(Currency currency = Currency::rub) {
+        int amount = 0;
+        for (auto it = dispensers_.getIterator().first(); not it.isDone(); it = it.next()) {
+            amount += it->balance(currency);
+        }
+        return amount;
+    }
+
+    Atm& addObserver(DispenserObserver* observer) {
+        observer_ = observer;
         return *this;
     }
 
     template <typename... Args>
     Atm& addDispenser(Args... args) {
-        return addDispenser(make_unique<Dispenser>(forward<Args>(args)...));
+        dispensers_.insert(make_unique<Dispenser>(forward<Args>(args)...));
+        return *this;
     }
 
     unique_ptr<Atm> clone() const override {
         auto atm = make_unique<Atm>(observer_);
-        for (auto it = dispensers_->first(); not it->isDone(); it = it->next()) {
-            atm->addDispenser(it->clone());
+        for (auto it = dispensers_.getIterator().first(); not it.isDone(); it = it.next()) {
+            atm->dispensers_.insert(it->clone());
         }
         return atm;
     }
 
 private:
-    unique_ptr<Dispenser> dispensers_;
+    DispenserCollection dispensers_;
     DispenserObserver* observer_;
 };
 
@@ -263,18 +294,18 @@ void testTransactionRollback(Withdrawable& withdrawable, int amount, Currency cu
 void testDispenser() {
     auto null = make_unique<Dispenser>();
 
-    assert(null->isDone());
     assert(null->balance() == 0);
 
-    const auto rawNull = null.get();
+    DispenserCollection empty;
+    assert(empty.getIterator().isDone());
 
     auto rub100 = make_unique<Dispenser>(10, 100, Currency::rub);
-    rub100->setNext(move(null));
 
-    assert(rub100->first() == rub100.get());
-    assert(rub100->next() == rawNull);
-    assert(not rub100->isDone());
-    assert(rub100->next()->isDone());
+    DispenserCollection single;
+    single.insert(rub100->clone());
+    assert(single.getIterator().first()->balance() == rub100->balance());
+    assert(single.getIterator().next().isDone());
+
     assert(rub100->balance(Currency::rub) == 1000);
 
     testTransactionRollback(*rub100, 0, Currency::rub);
