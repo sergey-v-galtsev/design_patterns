@@ -38,7 +38,14 @@ public:
 };
 
 
-class Dispenser {
+template <typename T>
+class Clonable {
+public:
+    virtual unique_ptr<T> clone() const = 0;
+};
+
+
+class Dispenser : public Clonable<Dispenser> {
 public:
     Dispenser(int count = 0, int value = 0, Currency currency = Currency::rub)
         : count_{count}
@@ -107,7 +114,7 @@ public:
         setNext(move(next));
     }
 
-    unique_ptr<Dispenser> clone() const {
+    unique_ptr<Dispenser> clone() const override {
         return make_unique<Dispenser>(count_, value_, currency_);
     }
 
@@ -119,7 +126,7 @@ private:
 };
 
 
-class Atm {
+class Atm : public Clonable<Atm> {
 public:
     Atm(DispenserObserver* observer = nullptr)
         : dispensers_{make_unique<Dispenser>()}
@@ -130,7 +137,7 @@ public:
     void withdraw(int amount, Currency currency = Currency::rub) {
         try {
             dispensers_->withdraw(amount, currency, observer_);
-            cout << "withdrawen " << amount << ' ' << getCurrencyName(currency) << '\n';
+            cout << "withdrawn " << amount << ' ' << getCurrencyName(currency) << '\n';
         } catch (logic_error& error) {
             cout << "error withdrawing " << amount << ' ' << getCurrencyName(currency) << ": " << error.what() << '\n';
             throw;
@@ -173,7 +180,7 @@ public:
         return addDispenser(make_unique<Dispenser>(forward<Args>(args)...));
     }
 
-    unique_ptr<Atm> clone() const {
+    unique_ptr<Atm> clone() const override {
         auto atm = make_unique<Atm>(observer_);
         for (auto it = dispensers_->first(); not it->isDone(); it = it->next()) {
             atm->addDispenser(it->clone());
