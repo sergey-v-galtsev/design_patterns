@@ -118,38 +118,43 @@ private:
 };
 
 
-class DispenserIterator {
-public:
-    DispenserIterator(Dispenser* first, Dispenser* current)
-        : first_{first}
-        , current_{current}
-    {
-    }
-
-    DispenserIterator first() {
-        return DispenserIterator{first_, first_};
-    }
-
-    DispenserIterator next() const {
-        return DispenserIterator{first_, current_->next()};
-    }
-
-    bool isDone() const {
-        return current_ == nullptr;
-    }
-
-    Dispenser* operator->() const {
-        return current_;
-    }
-
-private:
-    Dispenser *first_;
-    Dispenser *current_;
-};
-
-
 class DispenserCollection {
 public:
+    // This is C++ flavored Iterator pattern implementation.
+    // A version resembling the slides is here: https://github.com/sergey-v-galtsev/design_patterns/blob/69c9922bd79741e23bfd987e94c010c73e965e37/design_patterns.cpp#L121
+    class DispenserIterator {
+    public:
+        DispenserIterator(Dispenser* value)
+            : value_{value}
+        {
+        }
+
+        DispenserIterator& operator++() {
+            value_ = value_->next();
+            return *this;
+        }
+
+        bool operator==(const DispenserIterator& that) const {
+            return value_ == that.value_;
+        }
+
+        bool operator!=(const DispenserIterator& that) const {
+            return value_ != that.value_;
+        }
+
+        Dispenser& operator*() const {
+            return *value_;
+        }
+
+        Dispenser* operator->() const {
+            return value_;
+        }
+
+    private:
+        Dispenser *value_;
+    };
+
+
     void insert(unique_ptr<Dispenser> dispenser) {
         Dispenser* prev = nullptr;
         auto it = dispensers_.get();
@@ -166,8 +171,12 @@ public:
         }
     }
 
-    DispenserIterator getIterator() const {
-        return DispenserIterator{dispensers_.get(), dispensers_.get()};
+    DispenserIterator begin() const {
+        return DispenserIterator{dispensers_.get()};
+    }
+
+    DispenserIterator end() const {
+        return DispenserIterator{nullptr};
     }
 
 private:
@@ -184,7 +193,7 @@ public:
 
     void withdraw(int amount, Currency currency = Currency::rub) {
         try {
-            dispensers_.getIterator().first()->withdraw(amount, currency, observer_);
+            dispensers_.begin()->withdraw(amount, currency, observer_);
             cout << "withdrawn " << amount << ' ' << getCurrencyName(currency) << '\n';
         } catch (logic_error& error) {
             cout << "error withdrawing " << amount << ' ' << getCurrencyName(currency) << ": " << error.what() << '\n';
@@ -194,8 +203,8 @@ public:
 
     int balance(Currency currency = Currency::rub) {
         int amount = 0;
-        for (auto it = dispensers_.getIterator().first(); not it.isDone(); it = it.next()) {
-            amount += it->balance(currency);
+        for (const auto& dispenser : dispensers_) {
+            amount += dispenser.balance(currency);
         }
         return amount;
     }
@@ -213,8 +222,8 @@ public:
 
     unique_ptr<Atm> clone() const override {
         auto atm = make_unique<Atm>(observer_);
-        for (auto it = dispensers_.getIterator().first(); not it.isDone(); it = it.next()) {
-            atm->dispensers_.insert(it->clone());
+        for (const auto& dispenser : dispensers_) {
+            atm->dispensers_.insert(dispenser.clone());
         }
         return atm;
     }
@@ -297,14 +306,14 @@ void testDispenser() {
     assert(null->balance() == 0);
 
     DispenserCollection empty;
-    assert(empty.getIterator().isDone());
+    assert(empty.begin() == empty.end());
 
     auto rub100 = make_unique<Dispenser>(10, 100, Currency::rub);
 
     DispenserCollection single;
     single.insert(rub100->clone());
-    assert(single.getIterator().first()->balance() == rub100->balance());
-    assert(single.getIterator().next().isDone());
+    assert(single.begin()->balance() == rub100->balance());
+    assert(++single.begin() == single.end());
 
     assert(rub100->balance(Currency::rub) == 1000);
 
